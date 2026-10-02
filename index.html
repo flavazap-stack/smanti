@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Absensi Guru & Staf TU - SMA Negeri 3 Sarmi</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;color:#172033}
+header{background:#123d6a;color:#fff;padding:18px;text-align:center}
+main{max-width:900px;margin:20px auto;padding:0 15px}
+.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 5px 20px #0001}
+video{width:100%;max-width:640px;border-radius:14px;background:#111;display:block;margin:auto;transform:scaleX(-1)}
+button{border:0;border-radius:10px;padding:12px 18px;background:#123d6a;color:#fff;font-weight:bold;cursor:pointer;margin:5px}
+button.secondary{background:#5b6472}
+input,select{width:100%;box-sizing:border-box;padding:11px;border:1px solid #ccd4df;border-radius:9px;margin:5px 0 12px}
+.status{padding:12px;border-radius:10px;background:#eef4ff;margin-top:12px}
+.small{font-size:13px;color:#667085}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:650px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>ABSENSI GURU & STAF TU</h1>
+  <div>SMA NEGERI 3 SARMI</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Absensi Wajah</h2>
+    <p class="small">Gunakan HTTPS. Izinkan kamera saat browser meminta akses.</p>
+    <video id="video" autoplay muted playsinline></video>
+    <div style="text-align:center">
+      <button id="startBtn">Aktifkan Kamera</button>
+      <button id="scanBtn" disabled>Scan Wajah</button>
+    </div>
+    <div id="status" class="status">Memuat model wajah...</div>
+  </section>
+
+  <section class="card">
+    <h2>Pendaftaran / Update Wajah</h2>
+    <div class="row">
+      <div><label>ID Pegawai</label><input id="rid" placeholder="G001"></div>
+      <div><label>NIP/NUPTK</label><input id="rnip"></div>
+      <div><label>Nama</label><input id="rname"></div>
+      <div><label>Jabatan</label><input id="rposition"></div>
+      <div><label>Jenis</label>
+        <select id="rtype"><option>Guru</option><option>Staf TU</option><option>Kepala Sekolah</option><option>Tenaga Kependidikan</option></select>
+      </div>
+      <div><label>No. WhatsApp (opsional)</label><input id="rwa"></div>
+    </div>
+    <label>PIN Admin</label><input id="pin" type="password" placeholder="PIN admin">
+    <button id="registerBtn">Ambil Wajah & Simpan</button>
+    <div id="regStatus" class="status">Pastikan wajah berada di tengah kamera.</div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<script src="./config.js"></script>
+<script>
+let employees=[];
+let modelsReady=false;
+const video=document.getElementById('video');
+const statusEl=document.getElementById('status');
+const regStatus=document.getElementById('regStatus');
+
+function setStatus(t){statusEl.textContent=t}
+function setReg(t){regStatus.textContent=t}
+
+async function api(action, data={}){
+  const res=await fetch(API_URL,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action,...data})
+  });
+  return await res.json();
+}
+
+async function loadModels(){
+  try{
+    const base=MODEL_URL;
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(base),
+      faceapi.nets.faceLandmark68Net.loadFromUri(base),
+      faceapi.nets.faceRecognitionNet.loadFromUri(base)
+    ]);
+    modelsReady=true;
+    setStatus('Model siap. Klik "Aktifkan Kamera".');
+  }catch(e){
+    setStatus('Gagal memuat model wajah: '+e.message);
+  }
+}
+
+async function loadEmployees(){
+  const r=await api('getEmployees');
+  if(r.ok) employees=r.employees||[];
+}
+
+async function startCamera(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},
+      audio:false
+    });
+    video.srcObject=stream;
+    document.getElementById('scanBtn').disabled=false;
+    setStatus('Kamera aktif. Arahkan wajah ke kamera.');
+  }catch(e){
+    setStatus('Kamera gagal dibuka. Pastikan HTTPS, izin kamera aktif, dan gunakan Chrome/Edge terbaru.');
+  }
+}
+
+async function getDescriptor(){
+  const result=await faceapi.detectSingleFace(video,new faceapi.TinyFaceDetectorOptions({inputSize:416,scoreThreshold:0.5}))
+    .withFaceLandmarks().withFaceDescriptor();
+  if(!result) throw new Error('Wajah tidak terdeteksi. Pastikan wajah terang dan terlihat penuh.');
+  return Array.from(result.descriptor);
+}
+
+function distance(a,b){
+  let s=0;
+  for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d}
+  return Math.sqrt(s);
+}
+
+async function scan(){
+  if(!modelsReady){setStatus('Model belum siap.');return;}
+  setStatus('Menganalisis wajah...');
+  try{
+    const desc=await getDescriptor();
+    let best=null, bestDist=Infinity;
+    for(const emp of employees){
+      if(!emp.descriptor || emp.descriptor.length!==desc.length) continue;
+      const d=distance(desc,emp.descriptor);
+      if(d<bestDist){bestDist=d;best=emp;}
+    }
+    // Threshold 0.50. Untuk produksi, uji dengan data sekolah sendiri.
+    if(!best || bestDist>0.50){
+      setStatus('Wajah tidak cocok. Silakan coba lagi.');
+      return;
+    }
+    const confidence=Math.max(0,Math.min(1,1-bestDist));
+    const r=await api('attendance',{id:best.id,descriptor:desc,confidence});
+    if(r.ok){
+      setStatus(`BERHASIL: ${r.employee} - ${r.status} - ${r.time}`);
+    }else{
+      setStatus(r.message||'Absensi gagal.');
+    }
+  }catch(e){setStatus(e.message)}
+}
+
+async function registerFace(){
+  try{
+    const desc=await getDescriptor();
+    const data={
+      adminPin:document.getElementById('pin').value,
+      id:document.getElementById('rid').value.trim(),
+      nip:document.getElementById('rnip').value.trim(),
+      name:document.getElementById('rname').value.trim(),
+      position:document.getElementById('rposition').value.trim(),
+      type:document.getElementById('rtype').value,
+      whatsapp:document.getElementById('rwa').value.trim(),
+      descriptor:desc
+    };
+    if(!data.id||!data.name||!data.adminPin) throw new Error('ID, Nama, dan PIN admin wajib diisi.');
+    setReg('Menyimpan...');
+    const r=await api('registerFace',data);
+    setReg(r.message||'Selesai');
+    if(r.ok) await loadEmployees();
+  }catch(e){setReg(e.message)}
+}
+
+document.getElementById('startBtn').onclick=startCamera;
+document.getElementById('scanBtn').onclick=scan;
+document.getElementById('registerBtn').onclick=registerFace;
+
+(async()=>{
+  await loadModels();
+  await loadEmployees();
+})();
+</script>
+</body>
+</html>
